@@ -1231,7 +1231,7 @@ class Parafac2(MatricesPenalty):
             if self.update_basis_matrices:
                 basis_matrices = []  # To prevent inplace editing of basis matrices
                 for fm in factor_matrices:
-                    U, s, Vh = self.svd_fun(tl.matmul(fm, tl.transpose(coordinate_matrix)))#, n_eigenvecs=R)
+                    U, s, Vh = self.svd_fun(tl.matmul(fm, tl.transpose(coordinate_matrix)), n_eigenvecs=R)
                     basis_matrices.append(tl.matmul(U, Vh))
 
             if self.update_coordinate_matrix:
