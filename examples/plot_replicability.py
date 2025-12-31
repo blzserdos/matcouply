@@ -74,7 +74,8 @@ def fit_many_parafac2(X, num_components, num_inits=5):
                 norm_Brk = tl.norm(est_B[k][:, r])
                 Bs[k,:,r] = est_B[k,:,r] / norm_Brk
 
-        # calculate scaled B
+        # calculate scaled B; 
+        # since the loadings in B are specific to levels of C, we absorb C into the corresponding B for each component
         cB = np.empty(Bs.shape)
         for r in range(num_components):
             for k in range(Cs.shape[0]):
