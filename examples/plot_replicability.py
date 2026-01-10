@@ -63,7 +63,7 @@ def fit_many_parafac2(X, num_components, num_inits=5):
         Bs = np.empty(est_B.shape)
         Cs = np.empty(est_C.shape)
 
-        K = Cs.shape[0]
+        K = As.shape[0]
         for r in range(num_components):
             norm_Ar = tl.norm(est_A[:, r])
             norm_Cr = tl.norm(est_C[:, r])
@@ -75,14 +75,14 @@ def fit_many_parafac2(X, num_components, num_inits=5):
                 Bs[k,:,r] = est_B[k,:,r] / norm_Brk
 
         # calculate scaled B; 
-        # since the loadings in B are specific to levels of C, we absorb C into the corresponding B for each component
-        cB = np.empty(Bs.shape)
+        # since the loadings in B are specific to levels of A, we absorb A into the corresponding B for each component
+        aB = np.empty(Bs.shape)
         for r in range(num_components):
-            for k in range(Cs.shape[0]):
-                cB[k,:,r] = Cs[k,r] * Bs[k,:,r]  
+            for k in range(As.shape[0]):
+                aB[k,:,r] = As[k,r] * Bs[k,:,r]  
 
 
-    return (est_weights, (As, cB))  
+    return (est_weights, (Cs, aB))  
 
 
 ###############################################################################
@@ -97,7 +97,7 @@ def truncated_normal(size):
     x[x < 0] = 0
     return tl.tensor(x)
 
-I, J, K = 35, 20, 25
+I, J, K = 25, 20, 35
 rank = 2
 
 A = rng.uniform(size=(I, rank)) + 0.1  # Add 0.1 to ensure that there is signal for all components for all slices
@@ -192,7 +192,9 @@ for rank in models.keys():
             for j, model_j in enumerate(current_models):
                 if i >= j:  # include every pair only once and omit i == j
                     continue
-                fms = congruence_coefficient(m_i[1][0], m_j[1][0])[0]
+                weights_i, (C_i, _) = model_i
+                weights_j, (C_j, _) = model_j
+                fms = congruence_coefficient(C_i, C_j)[0]
                 replicability_stability[rank].append(fms)
 
 ranks = sorted(replicability_stability.keys())
@@ -201,7 +203,7 @@ data = [np.ravel(replicability_stability[r]) for r in ranks]
 fig, ax = plt.subplots()
 ax.boxplot(data,whis=(0.95,0.05), positions=ranks)
 ax.set_xlabel("Number of components")
-ax.set_ylabel("FMS_A")
+ax.set_ylabel("FMS_C")
 plt.show()
 
 ###############################################################################
@@ -224,8 +226,8 @@ for rank in models.keys():
             for j, model_j in enumerate(models[rank][repeat]):
                 if i >= j:  # include every pair only once and omit i == j
                     continue
-                weights_i, (aB_i, C_i) = model_i
-                weights_j, (aB_j, C_j) = model_j
+                weights_i, (C_i, aB_i) = model_i
+                weights_j, (C_j, aB_j) = model_j
 
                 indices_subset_i = sorted(split_indices[rank][repeat][i])
                 indices_subset_j = sorted(split_indices[rank][repeat][j])
@@ -238,10 +240,10 @@ for rank in models.keys():
                     indices2use_i.append(indices_subset_i.index(common_idx))
                     indices2use_j.append(indices_subset_j.index(common_idx))
 
-                cB_i = cB_i[indices2use_i, :, :]
-                cB_j = cB_j[indices2use_j, :, :]
+                aB_i = aB_i[indices2use_i, :, :]
+                aB_j = aB_j[indices2use_j, :, :]
                 fms = tlviz.factor_tools.factor_match_score(
-                    (weights_i, (A_i, cB_i.reshape(-1, cB_i.shape[2]))), (weights_j, (A_j, cB_j.reshape(-1, cB_j.shape[2]))), consider_weights=False
+                    (weights_i, (C_i, aB_i.reshape(-1, aB_i.shape[2]))), (weights_j, (C_j, aB_j.reshape(-1, aB_j.shape[2]))), consider_weights=False
                 )
                 replicability_alt[rank].append(fms)
 
@@ -251,7 +253,7 @@ data = [np.ravel(replicability_alt[r]) for r in ranks]
 fig, ax = plt.subplots()
 ax.boxplot(data, positions=ranks)
 ax.set_xlabel("Number of components")
-ax.set_ylabel("FMS_CB")
+ax.set_ylabel("FMS_aB")
 plt.show()
 
 ###############################################################################
