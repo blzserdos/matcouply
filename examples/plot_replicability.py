@@ -55,7 +55,7 @@ def fit_many_parafac2(X, num_components, num_inits=5):
             best_err = trial_errs.rec_errors[-1]
             decomposition = trial_decomposition # note, with real data, convergence should be checked
 
-        (est_weights, (est_C, est_B, est_A)) = decomposition
+        (est_weights, (est_A, est_B, est_C)) = decomposition
         est_B = np.asarray(est_B)
 
         # normalize factors
