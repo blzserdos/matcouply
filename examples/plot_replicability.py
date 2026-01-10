@@ -188,8 +188,8 @@ replicability_stability = {}
 for rank in models.keys():
     replicability_stability[rank] = []
     for repeat, current_models in enumerate(models[rank]):
-        for i, m_i in enumerate(current_models):
-            for j, m_j in enumerate(current_models):
+        for i, model_i in enumerate(current_models):
+            for j, model_j in enumerate(current_models):
                 if i >= j:  # include every pair only once and omit i == j
                     continue
                 fms = congruence_coefficient(m_i[1][0], m_j[1][0])[0]
