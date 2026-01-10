@@ -220,12 +220,12 @@ replicability_alt = {}
 for rank in models.keys():
     replicability_alt[rank] = []
     for repeat in range(repeats):
-        for i, cp_i in enumerate(models[rank][repeat]):
-            for j, cp_j in enumerate(models[rank][repeat]):
+        for i, model_i in enumerate(models[rank][repeat]):
+            for j, model_j in enumerate(models[rank][repeat]):
                 if i >= j:  # include every pair only once and omit i == j
                     continue
-                weights_i, (A_i, cB_i) = cp_i
-                weights_j, (A_j, cB_j) = cp_j
+                weights_i, (aB_i, C_i) = model_i
+                weights_j, (aB_j, C_j) = model_j
 
                 indices_subset_i = sorted(split_indices[rank][repeat][i])
                 indices_subset_j = sorted(split_indices[rank][repeat][j])
