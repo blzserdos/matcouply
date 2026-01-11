@@ -12,6 +12,8 @@ except ImportError:
 import numpy as np
 import tensorly as tl
 from scipy.optimize import bisect
+from scipy.sparse import csr_matrix, bmat
+from scipy.sparse.linalg import spsolve
 
 from ._doc_utils import InheritableDocstrings, copy_ancestor_docstring
 from ._unimodal_regression import unimodal_regression
@@ -1377,7 +1379,7 @@ class TemporalSmoothnessPenalty(MatricesPenalty):
         super().__init__(aux_init=aux_init, dual_init=dual_init)
         self.smoothness_l = smoothness_l
 
-    def _get_laplace_coef(self,i, I):
+    def _get_laplace_coef(self, i, I):
         if i == 0 or i == I - 1:
             return 2 * self.smoothness_l
         else:
@@ -1424,4 +1426,105 @@ class TemporalSmoothnessPenalty(MatricesPenalty):
         penalty = 0
         for x1, x2 in zip(x[:-1], x[1:]):
             penalty += tl.sum((x1 - x2) ** 2)
+        return self.smoothness_l * penalty
+
+
+class LDSPenalty(MatricesPenalty):
+    r"""Impose Linear Dynamical System Constraint (LDS) on the evolving factor matrices:
+
+    .. math::
+
+    \lambda_B \sum_{k=2}^K \lVert \mathbf{B}_k - \mathbf{H} \mathbf{B}_{k-1} \rVert^2_F .
+
+    More information as well as experiments can be found in :cite:p:`chatzis2025dcmf`.
+
+    Keep in mind that once we apply a norm-based penalty in the factor matrices, we need to also penalize the
+    norm of all other factor matrices :cite:p:`roald2021parafac2` to overcome the scaling ambiguity of PARAFAC2.
+    This can be done, for example, by adding ridge penalties on the norms of the other two factor matrices.
+
+    Parameters
+    ----------
+    smoothness_l : float
+        Hyperparemeter controlling the strength of the LDS penalty.
+    H : tl.tensor(ndim=2)
+        The transition matrix assumed on the factor matrices.
+    aux_init : {"random_uniform", "random_standard_normal", "zeros", tl.tensor(ndim=2), list of tl.tensor(ndim=2)}
+        Initialisation method for the auxiliary variables
+    dual_init : {"random_uniform", "random_standard_normal", "zeros", tl.tensor(ndim=2), list of tl.tensor(ndim=2)}
+        Initialisation method for the auxiliary variables
+    """
+
+    def __init__(
+        self,
+        smoothness_l,
+        H,
+        aux_init="random_uniform",
+        dual_init="random_uniform",
+    ):
+        super().__init__(aux_init=aux_init, dual_init=dual_init)
+        self.smoothness_l = smoothness_l
+        self.H = H
+
+    @copy_ancestor_docstring
+    def factor_matrices_update(self, factor_matrices, feasibility_penalties, auxes):
+
+        B_is = factor_matrices
+        rhos = feasibility_penalties
+        J = B_is[0].shape[-2]
+        K = len(B_is)
+
+        HtH = self.H.T @ self.H
+
+        rhs = np.vstack([rhos[i] * factor_matrices[i] for i in range(len(B_is))])
+
+        # Build the sparse block matrix A
+        diagonal_blocks = []
+        off_diagonal_terms = []  # Store off-diagonal connections
+
+        # Step 1: Construct diagonal and off-diagonal blocks
+        for k in range(K):
+            # Diagonal block
+            if k == 0:
+                A_diag = 2 * self.smoothness_l * HtH + rhos[k] * np.eye(J)
+            elif k == K - 1:
+                A_diag = (2 * self.smoothness_l + rhos[k]) * np.eye(J)
+            else:
+                A_diag = 2 * self.smoothness_l * HtH + rhos[k] * np.eye(J) + 2 * self.smoothness_l * np.eye(J)
+
+            diagonal_blocks.append(csr_matrix(A_diag))
+
+            # Off-diagonal terms
+            if k > 0:
+                off_diag = -2 * self.smoothness_l * self.H
+                off_diagonal_terms.append(((k, k - 1), csr_matrix(off_diag)))
+            if k < K - 1:
+                off_diag = -2 * self.smoothness_l * self.H.T
+                off_diagonal_terms.append(((k, k + 1), csr_matrix(off_diag)))
+
+        # Step 2: Build the sparse matrix A
+        block_matrix = [[None for _ in range(K)] for _ in range(K)]
+
+        # Fill diagonal blocks
+        for i, diag in enumerate(diagonal_blocks):
+            block_matrix[i][i] = diag
+
+        # Fill off-diagonal blocks
+        for (i, j), off_diag in off_diagonal_terms:
+            block_matrix[i][j] = off_diag
+
+        # Convert to sparse block matrix
+        A_sparse = bmat(block_matrix, format="csr")
+
+        # Step 3: Solve the sparse system
+        Z_vec = spsolve(A_sparse, rhs)
+
+        # Step 4: Reshape the solution back into matrices
+        Z_B = [Z_vec[k * J : (k + 1) * J, :] for k in range(K)]
+
+        return Z_B
+
+    def penalty(self, x):
+        penalty = 0
+        for x1, x2 in zip(x[:-1], x[1:]):
+            penalty += np.sum((self.H @ x1 - x2) ** 2)
         return self.smoothness_l * penalty

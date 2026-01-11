@@ -15,6 +15,44 @@ from .coupled_matrices import CoupledMatrixFactorization, cmf_to_matrices
 __all__ = ["compute_feasibility_gaps", "ADMMVars", "DiagnosticMetrics", "cmf_aoadmm", "parafac2_aoadmm"]
 
 
+def _update_imputed(tensor_slices, mask, decomposition, method):
+    """
+    Update missing values of tensor slices according to method.
+
+    Parameters
+    ----------
+    tensor_slices : Iterable of ndarray
+    mask : ndarray
+        An array with the same shape as the tensor. It should be 0 where there are
+        missing values and 1 everywhere else.
+    decomposition : Parafac2Tensor, optional
+    method : string
+        One of 'mode-3' or 'factors'. 'mode-3' updates imputed values according to
+        mean of each mode-3 slice. If 'factors' is chosen, set missing entries
+        according to reconstructed tensor given from 'decomposition'.
+        'mode-3' is used (by default) for initializing missing entries while
+        'factors' is used for updating imputations during optimization. If an
+        initial decomposition is specified, 'factors' is used at initialization.
+
+    Returns
+    -------
+    tensor_slices : Iterable of ndarray
+    """
+    if method == "mode-3":
+        for slice_no, (slice, slice_mask) in enumerate(zip(tensor_slices, mask)):
+            slice_mean = tl.sum(slice * slice_mask) / tl.sum(slice_mask)
+            tensor_slices[slice_no] = tl.where(slice_mask == 0, slice_mean, tensor_slices[slice_no])
+
+    else:
+        reconstructed_slices = cmf_to_matrices(decomposition)
+        tensor_slices = list(tensor_slices)
+
+        for slice_no, (slice, rec_slice, slice_mask) in enumerate(zip(tensor_slices, reconstructed_slices, mask)):
+            tensor_slices[slice_no] = tl.where(slice_mask == 0, rec_slice, slice)
+
+    return tensor_slices
+
+
 def initialize_cmf(matrices, rank, init, svd_fun, random_state=None, init_params=None):
     random_state = tl.check_random_state(random_state)
 
@@ -136,7 +174,7 @@ def admm_update_A(
     cross_products = []
     rhses = []
     CtC = tl.dot(tl.transpose(C), C)
-    
+
     for matrix, B_i in zip(matrices, B_is):
         # Multiply three matrices (B_i X_i C) in the most efficient order:
         # (B_i X_i) C has complexity O((K J_i R) + (K R^2))
@@ -344,8 +382,11 @@ def admm_update_C(
     return (None, [A, B_is, C]), C_aux_list, C_dual_list
 
 
-def _root_sum_squared_list(x_list):
-    return np.sqrt(tl.to_numpy(sum(tl.sum(x ** 2) for x in x_list)))
+def _root_sum_squared_list(x_list, mask=None):
+    if mask is None:
+        return np.sqrt(tl.to_numpy(sum(tl.sum(x**2) for x in x_list)))
+    else:
+        return np.sqrt(tl.to_numpy(sum(tl.sum(w * x**2) for x, w in zip(x_list, mask))))
 
 
 def compute_feasibility_gaps(cmf, regs, A_aux_list, B_aux_list, C_aux_list):
@@ -417,7 +458,16 @@ def compute_feasibility_gaps(cmf, regs, A_aux_list, B_aux_list, C_aux_list):
     return A_gaps, B_gaps, C_gaps
 
 
-def _cmf_reconstruction_error(matrices, cmf, norm_matrices=None, intermediate_A_calculations=None):
+def _cmf_reconstruction_error(matrices, cmf, norm_matrices=None, intermediate_A_calculations=None,mask=None):
+
+    if mask is None:
+        return _cmf_reconstruction_error_without_mask(matrices,cmf,norm_matrices,intermediate_A_calculations)
+    else:
+        return _cmf_reconstruction_error_with_mask(matrices,cmf,mask)
+
+
+def _cmf_reconstruction_error_without_mask(matrices, cmf, norm_matrices=None, intermediate_A_calculations=None):
+
     if norm_matrices is None:
         norm_X_sq = sum(tl.sum(matrix**2) for matrix in matrices)
     else:
@@ -450,6 +500,16 @@ def _cmf_reconstruction_error(matrices, cmf, norm_matrices=None, intermediate_A_
 
     # Threshold to handle roundoff errors with very small error
     return np.sqrt(tl.to_numpy(max(0, norm_X_sq - 2 * inner_product + norm_cmf_sq)))
+
+    
+def _cmf_reconstruction_error_with_mask(matrices, cmf, mask=None):
+
+    reconstructed_matrices = cmf_to_matrices(cmf)
+    total_error = 0
+    for i, (slice, slice_mask) in enumerate(zip(matrices, mask)):
+        total_error += tl.norm(slice_mask * slice - slice_mask * reconstructed_matrices[i]) ** 2
+
+    return tl.sqrt(total_error)
 
 
 def _listify(input_value, param_name):
@@ -618,11 +678,11 @@ def _compute_l2_penalty(cmf, l2_parameters):
     weights, (A, B_is, C) = cmf
     l2reg = 0
     if l2_parameters[0]:
-        l2reg += 0.5 * l2_parameters[0] * tl.sum(A ** 2)
+        l2reg += 0.5 * l2_parameters[0] * tl.sum(A**2)
     if l2_parameters[1]:
-        l2reg += 0.5 * l2_parameters[1] * sum(tl.sum(B_i ** 2) for B_i in B_is)
+        l2reg += 0.5 * l2_parameters[1] * sum(tl.sum(B_i**2) for B_i in B_is)
     if l2_parameters[2]:
-        l2reg += 0.5 * l2_parameters[2] * tl.sum(C ** 2)
+        l2reg += 0.5 * l2_parameters[2] * tl.sum(C**2)
 
     return l2reg
 
@@ -693,6 +753,7 @@ def cmf_aoadmm(
     return_admm_vars=False,
     return_errors=False,
     verbose=False,
+    mask=None,
 ):
     r"""Fit a regularized coupled matrix factorization model with AO-ADMM
 
@@ -803,6 +864,8 @@ def cmf_aoadmm(
     verbose : bool or int (default=False)
         If ``True``, then a message with convergence info will be printed out every iteration.
         If ``int > 1``, then a message with convergence info will be printed out ever ``verbose`` iteration.
+    mask : ndarray, optional
+        An array with the same shape as the tensor. It should be 0 where there are missing values and 1 everywhere else.
 
     Returns
     -------
@@ -876,6 +939,13 @@ def cmf_aoadmm(
     l2_penalty = _listify(l2_penalty, "l2_penalty")
     l2_penalty = [l2 if l2 is not None else 0 for l2 in l2_penalty]
 
+    # Initial missing imputation
+    if mask is not None:
+        if init == "random" or init == "svd" or init == "threshold_svd":
+            matrices = _update_imputed(tensor_slices=list(matrices), mask=mask, decomposition=None, method="mode-3")
+        else:  # If factors are provided from a "warmer" start (e.g. parafac2_als) use the factor estimates as initial guesses
+            matrices = _update_imputed(tensor_slices=list(matrices), mask=mask, decomposition=cmf, method="factors")
+
     regs = _parse_all_penalties(
         non_negative=non_negative,
         lower_bound=lower_bound,
@@ -901,14 +971,21 @@ def cmf_aoadmm(
         regs[2] = []
 
     # TODO  (Improvement): Include cmf to initialize functions in case other init schemes require that?
-    (A_aux_list, B_is_aux_list, C_aux_list,) = initialize_aux(matrices, rank, regs, random_state=random_state)
-    (A_dual_list, B_is_dual_list, C_dual_list,) = initialize_dual(matrices, rank, regs, random_state=random_state)
-    norm_matrices = _root_sum_squared_list(matrices)
+    (
+        A_aux_list,
+        B_is_aux_list,
+        C_aux_list,
+    ) = initialize_aux(matrices, rank, regs, random_state=random_state)
+    (
+        A_dual_list,
+        B_is_dual_list,
+        C_dual_list,
+    ) = initialize_dual(matrices, rank, regs, random_state=random_state)
+    norm_matrices = _root_sum_squared_list(matrices, mask=mask)
     rec_errors = []
     feasibility_gaps = []
 
-    
-    rec_error = _cmf_reconstruction_error(matrices, cmf, norm_matrices, intermediate_A_calculations=None)
+    rec_error = _cmf_reconstruction_error(matrices=matrices, cmf=cmf, norm_matrices=norm_matrices,intermediate_A_calculations=None,mask=mask)
     rec_error /= norm_matrices
     rec_errors.append(rec_error)
     losses = []
@@ -918,7 +995,7 @@ def cmf_aoadmm(
         + sum(C_reg.penalty(cmf[1][2]) for C_reg in regs[2])
     )
     l2_reg = _compute_l2_penalty(cmf, l2_penalty)
-    losses.append(0.5 * rec_error ** 2 + l2_reg + reg_penalty)
+    losses.append(0.5 * rec_error**2 + l2_reg + reg_penalty)
 
     A_gaps, B_gaps, C_gaps = compute_feasibility_gaps(cmf, regs, A_aux_list, B_is_aux_list, C_aux_list)
     feasibility_gaps.append((A_gaps, B_gaps, C_gaps))
@@ -987,6 +1064,10 @@ def cmf_aoadmm(
                 svd_fun=svd_fun,
             )
 
+        if mask is not None:
+
+            matrices = _update_imputed(tensor_slices=matrices, decomposition=cmf, mask=mask, method="factors")
+
         if tol or absolute_tol or return_errors:
             curr_feasibility_gaps = compute_feasibility_gaps(cmf, regs, A_aux_list, B_is_aux_list, C_aux_list)
             feasibility_gaps.append(curr_feasibility_gaps)
@@ -1010,7 +1091,7 @@ def cmf_aoadmm(
 
                     continue
 
-            rec_error = _cmf_reconstruction_error(matrices, cmf, norm_matrices, intermediate_A_calculations)
+            rec_error = _cmf_reconstruction_error(matrices=matrices,cmf=cmf,norm_matrices=norm_matrices,intermediate_A_calculations=intermediate_A_calculations,mask=mask)
             rec_error /= norm_matrices
             rec_errors.append(rec_error)
             reg_penalty = (
@@ -1020,7 +1101,7 @@ def cmf_aoadmm(
             )
 
             l2_reg = _compute_l2_penalty(cmf, l2_penalty)
-            losses.append(0.5 * rec_error ** 2 + l2_reg + reg_penalty)
+            losses.append(0.5 * rec_error**2 + l2_reg + reg_penalty)
 
             if verbose and it % verbose == 0 and verbose > 0:
                 A_gaps, B_gaps, C_gaps = curr_feasibility_gaps
@@ -1133,6 +1214,7 @@ def parafac2_aoadmm(
     return_errors=False,
     return_admm_vars=False,
     verbose=False,
+    mask=None,
 ):
     """Alias for cmf_aoadmm with PARAFAC2 constraint (constant cross-product) on mode 1 (B mode)
 
@@ -1176,4 +1258,5 @@ def parafac2_aoadmm(
         return_errors=return_errors,
         return_admm_vars=return_admm_vars,
         verbose=verbose,
+        mask=mask,
     )

@@ -805,7 +805,7 @@ class TestTemporalSmoothness(BaseTestFactorMatricesPenalty):
         non_invariant_matrices = [tl.tensor(rng.random_sample(shapes[k])) for k in range(K)]
         return non_invariant_matrices
 
-    def test_A_assembly(self, random_regular_cmf,rng):
+    def test_A_assembly(self, random_regular_cmf, rng):
         # Ensure A is assembled correctly by comparing the efficent method (A1) with the manual assembly (A2).
 
         penalty = self.PenaltyType(**self.penalty_default_kwargs)
@@ -817,9 +817,7 @@ class TestTemporalSmoothness(BaseTestFactorMatricesPenalty):
         rhos = rng.random_sample(I)
 
         A1 = (
-            tl.diag(
-                tl.tensor([penalty._get_laplace_coef( i, I) + rho for i, rho in enumerate(rhos)]), k=0
-            )
+            tl.diag(tl.tensor([penalty._get_laplace_coef(i, I) + rho for i, rho in enumerate(rhos)]), k=0)
             - tl.diag(tl.ones(I - 1) * 2 * penalty.smoothness_l, k=1)
             - tl.diag(tl.ones(I - 1) * 2 * penalty.smoothness_l, k=-1)
         )
@@ -840,5 +838,53 @@ class TestTemporalSmoothness(BaseTestFactorMatricesPenalty):
 
         if tl.get_backend() == "numpy":
             assert_allclose(A1, A2)
-        else: # pytorch is slightly less accurate here, so we relax the tolerance
+        else:  # pytorch is slightly less accurate here, so we relax the tolerance
             assert_allclose(A1, A2, rtol=1e-5)
+
+
+class TestLDSPenalty(BaseTestFactorMatricesPenalty):
+
+    PenaltyType = penalties.LDSPenalty
+    randomH = tl.random.random_tensor(shape=(10, 10))
+    penalty_default_kwargs = {"smoothness_l": 1, "H": randomH}
+
+    n_rows = 10
+    min_rows = n_rows
+    max_rows = n_rows
+
+    def test_penalty(self, rng, random_regular_cmf):
+
+        penalty = self.PenaltyType(**self.penalty_default_kwargs)
+        cmf, random_ragged_shapes, rank = random_regular_cmf
+        weights, (A, B_is, C) = cmf
+
+        K = len(B_is)
+        J = B_is[0].shape[0]
+        penalty.H = penalty.H[:J, :J]  # Ensure H is of the correct shape
+
+        penalty_term = 0
+        for k in range(1, K):
+            penalty_term += tl.sum((B_is[k] - penalty.H @ B_is[k - 1]) ** 2)
+
+        assert_allclose(penalty.penalty(B_is), penalty_term)
+
+    def get_invariant_matrices(self, rng, shapes):
+        """Generate a list of invariant matrices that will not be changed by the proximal operator."""
+
+        penalty = self.PenaltyType(**self.penalty_default_kwargs)
+        K = len(shapes)
+
+        invariant_matrices = [np.array(rng.random_sample(shapes[0]))]
+
+        for K in range(1, K):
+            invariant_matrices.append(penalty.H @ invariant_matrices[-1])
+
+        return invariant_matrices
+
+    def get_non_invariant_matrices(self, rng, shapes):
+        """Generate a list of invariant matrices that will be changed by the proximal operator."""
+
+        K = len(shapes)
+
+        non_invariant_matrices = [tl.tensor(rng.random_sample(shapes[k])) for k in range(K)]
+        return non_invariant_matrices
